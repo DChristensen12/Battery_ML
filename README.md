@@ -6,6 +6,21 @@ This Repository is being used for machine learning simulations to study the mole
 
 ![Research Poster](Research/URF_Research_Poster.png)
 
+## Datasets
+
+### Dataset 1:
+
+Initial configurations are packed with Packmol and geometry-optimized with the FIRE algorithm. Systems are then equilibrated in two stages: NVT Langevin dynamics (50 ps, 300 K) to thermalize the structure, followed by NPT dynamics (100 ps, 300 K, 1 atm) to relax the box volume to equilibrium density. 
+Both stages used the OrbMol-v2 potential (Orbital Materials), trained on the OMol25 dataset.
+
+
+### Dataset 2:
+
+Configurations equilibrated under NPT with OPLS-AA and the OMol25-trained UMA potential (which is FAIRChem)
+
+### Dataset 3:
+
+Initial configurations were packed with Packmol and geometry-optimized with the FIRE algorithm. Systems were then equilibrated with NPT dynamics (100 ps, 300 K, 1 atm) to relax the box volume to equilibrium density. The run used the UMA potential (FAIRChem), trained on the OMol25 dataset.
 
 ## Electrolyte MD Toolkit
 
@@ -248,4 +263,7 @@ For a new electrolyte system, a common strategy is:
 # Current Status/Updates:
 
 Currently equilibrating boxes of mixtures that I found to be of interest via literature searchs. I also am going to make some
-changes with the scripts and ensure it runs more smoothly. The resulting dataset will also be uploaded to hugging face. Stay tuned!
+changes with the scripts and ensure it runs more smoothly. The resulting dataset will also be uploaded to hugging face.
+There will be two datasets created!
+
+Stay tuned!
