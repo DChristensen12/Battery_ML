@@ -37,7 +37,7 @@ GRID_COLOR = "#E6E6E7"
 
 
 def parse_md_log(log_path: str) -> dict[str, np.ndarray]:
-    """Reads an ASE MDLogger file into a dict of arrays, keyed by column name (things like 'Time[ps]', 'Etot[eV]', 'T[K]')."""
+    """Reads an ASE MDLogger file into arrays keyed by column name (Time[ps], Etot[eV], T[K], and so on)."""
     with open(log_path) as f:
         lines = [l for l in f if not l.startswith("#")]
 
@@ -59,7 +59,7 @@ def parse_md_log(log_path: str) -> dict[str, np.ndarray]:
 
 
 def load_density_from_traj(traj_path: str, mass_g: float) -> tuple[np.ndarray, np.ndarray]:
-    """Pulls cell volumes out of the trajectory and converts them to density in g/cm³, frame by frame."""
+    """Cell volume per frame, converted to density in g/cm3."""
     from ase.io.trajectory import Trajectory
 
     traj = Trajectory(traj_path, "r")
@@ -69,12 +69,12 @@ def load_density_from_traj(traj_path: str, mass_g: float) -> tuple[np.ndarray, n
     traj.close()
 
     volumes = np.array(volumes)
-    densities = mass_g / (volumes * 1e-24)  # Å³ to cm³
+    densities = mass_g / (volumes * 1e-24)  # A^3 to cm^3
     return np.arange(len(volumes)), densities
 
 
 def running_average(data: np.ndarray, window: int) -> np.ndarray:
-    """Simple moving average via convolution. Hands the data back untouched if the window's too big to matter."""
+    """Moving average by convolution. Returns the data untouched if the window is wider than it."""
     if window <= 1 or len(data) < window:
         return data.copy()
     kernel = np.ones(window) / window
@@ -82,7 +82,7 @@ def running_average(data: np.ndarray, window: int) -> np.ndarray:
 
 
 def setup_matplotlib():
-    """Sets up matplotlib with our color scheme and the Agg backend so it works headless."""
+    """Agg backend so this works headless, plus the color scheme."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -105,7 +105,7 @@ def setup_matplotlib():
 
 
 def plot_series(plt, time, values, color, ylabel, title, window, output_path):
-    """Plots one time series (instantaneous plus running average) and saves it out."""
+    """One time series, instantaneous plus running average."""
     fig, ax = plt.subplots()
     ax.plot(time, values, color=color, linewidth=1.0, alpha=0.5,
             label="Instantaneous")
@@ -125,7 +125,8 @@ def plot_series(plt, time, values, color, ylabel, title, window, output_path):
 
 
 def print_stats(name: str, data: np.ndarray, unit: str):
-    """Prints mean/std for the whole run and the last quarter, plus a rough linear drift if there's enough data to fit one."""
+    """Mean/std over the whole run and over the last quarter, which is the part that
+    should look equilibrated. Drift is a straight line fit, only if there's enough data."""
     last_quarter = data[3 * len(data) // 4:]
     print(f"\n  {name}:")
     print(f"    Overall:  mean={np.mean(data):.4f}, std={np.std(data):.4f} {unit}")
@@ -137,7 +138,6 @@ def print_stats(name: str, data: np.ndarray, unit: str):
 
 
 def main():
-    """CLI entry point: reads the log and trajectory, makes the plots."""
     parser = argparse.ArgumentParser(
         description="Plot equilibration diagnostics (temperature, density, energy vs time).",
     )

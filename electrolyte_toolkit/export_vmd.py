@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Converts an ASE trajectory into something VMD can actually open (XYZ or multi-model PDB).
 
-Reads trajectory.traj from run_md.py and writes it back out in a VMD-friendly format.
+Reads trajectory.traj from run_md.py and writes it back out.
 
 Requirements:
     pip install ase numpy
@@ -21,7 +21,6 @@ from utils import ProjectLayout
 
 
 def main():
-    """CLI entry point: reads the trajectory and writes it out in whichever format VMD specifies."""
     parser = argparse.ArgumentParser(
         description="Convert ASE trajectory to VMD-readable XYZ or PDB.",
     )

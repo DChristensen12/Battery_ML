@@ -35,7 +35,7 @@ from utils import parse_molecule_spec, add_cryst1_to_pdb, ProjectLayout
 
 
 def write_packmol_input(molecules, box_size, output_path, tolerance, seed):
-    """Puts together the Packmol input as a string, ready to pipe into the packmol binary. Doesn't touch disk itself."""
+    """Builds the packmol input as a string, ready to pipe in. Doesn't touch disk."""
     lines = [
         f"tolerance {tolerance}",
         "filetype pdb",
@@ -56,7 +56,6 @@ def write_packmol_input(molecules, box_size, output_path, tolerance, seed):
 
 
 def main():
-    """CLI entry point: parses the molecule specs, builds the box, runs packmol."""
     parser = argparse.ArgumentParser(
         description="Pack molecules into a cubic simulation cell.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -94,7 +93,7 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
     molecules = []
-    print(f"Box size: {args.box_size:.1f} Å  ({args.box_size**3:.0f} ų)")
+    print(f"Box size: {args.box_size:.1f} Å  ({args.box_size**3:.0f} Å^3)")
     print(f"Volume:   {args.box_size**3 * 1e-27:.4e} L\n")
 
     for spec in args.molecule:

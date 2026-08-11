@@ -2,8 +2,8 @@
 """Runs MD equilibration with an ML potential through ASE.
 
 Covers NVT (Langevin), NPT (Nose-Hoover), and annealing (cyclic heating and
-cooling). Defaults to orb-v3-conservative-omol since that one's trained on
-organic molecules and battery electrolytes specifically.
+cooling). Defaults to orbmol_v2, which is trained on organic molecules and
+battery electrolytes specifically.
 
 Outputs:
     trajectory.traj  (ASE trajectory: positions, cell, velocities)
@@ -26,14 +26,14 @@ import os
 import sys
 
 from utils import (
-    ATM_TO_GPA, DEFAULT_MODEL, DEFAULT_TIMESTEP_FS,
+    ATM_TO_GPA, ATM_TO_EV_A3, DEFAULT_MODEL, DEFAULT_TIMESTEP_FS,
     DEFAULT_TRAJ_INTERVAL, DEFAULT_PROP_INTERVAL,
     ProjectLayout, get_calculator,
 )
 
 
 def clean_previous_outputs(output_dir: str):
-    """Wipes leftover trajectory/log/xyz files from a previous run so runs don't get mixed together."""
+    """Wipe leftovers from a previous run so two runs don't get mixed together."""
     removed = []
     for name in ("trajectory.traj", "md.log", "final.xyz"):
         path = os.path.join(output_dir, name)
@@ -59,15 +59,15 @@ def setup_md(atoms, integrator, temperature, timestep_fs, friction,
         )
     elif integrator == "npt":
         from ase.md.npt import NPT
-        pressure_au = pressure_atm * (1.01325e5 * units.Pascal)
-        stress = pressure_au
+        pressure_eV_A3 = pressure_atm * ATM_TO_EV_A3
+        bulk_mod_eV_A3 = 1.0 * 0.006242  # ~1 GPa for organic liquids
         dyn = NPT(
             atoms,
             timestep=timestep_fs * units.fs,
             temperature_K=temperature,
-            externalstress=stress,
+            externalstress=pressure_eV_A3,
             ttime=25 * units.fs,
-            pfactor=(75 * units.fs) ** 2 * atoms.get_volume() * units.bar,
+            pfactor=(75 * units.fs) ** 2 * bulk_mod_eV_A3,
         )
     else:
         raise ValueError(f"Unknown integrator: {integrator}")
@@ -76,7 +76,6 @@ def setup_md(atoms, integrator, temperature, timestep_fs, friction,
 
 
 def attach_loggers(dyn, atoms, output_dir, traj_interval, prop_interval):
-    """Hooks up the trajectory writer and the property logger to the dynamics object."""
     from ase.io.trajectory import Trajectory
     from ase.md import MDLogger
 
@@ -96,7 +95,6 @@ def attach_loggers(dyn, atoms, output_dir, traj_interval, prop_interval):
 
 
 def run_nvt(args, atoms):
-    """Runs the NVT equilibration end to end: dynamics, loggers, go."""
     dyn = setup_md(atoms, "nvt", args.temperature, args.timestep,
                    args.friction)
     traj = attach_loggers(dyn, atoms, args.output_dir,
@@ -108,7 +106,6 @@ def run_nvt(args, atoms):
 
 
 def run_npt(args, atoms):
-    """Same idea as run_nvt, but pressure's in the mix now too."""
     dyn = setup_md(atoms, "npt", args.temperature, args.timestep,
                    args.friction, pressure_atm=args.pressure)
     traj = attach_loggers(dyn, atoms, args.output_dir,
@@ -121,9 +118,10 @@ def run_npt(args, atoms):
 
 
 def run_anneal(args, atoms):
-    """Runs the annealing protocol: heat up, cool back down, repeat for however many cycles you asked for.
+    """Heat up, cool back down, repeat for however many cycles you asked for.
 
-    Temperature gets nudged every `ramp_update` steps so the ramp is smooth instead of jumping in big chunks.
+    Temperature gets nudged every ramp_update steps, otherwise the ramp moves in
+    visible jumps.
     """
     from ase import units
     from ase.io.trajectory import Trajectory
@@ -133,7 +131,7 @@ def run_anneal(args, atoms):
     steps_per_segment = args.total_steps // (2 * args.num_cycles)
     ramp_update = max(1, min(100, steps_per_segment // 50))
 
-    print(f"\nAnnealing: {args.t_low}→{args.t_high} K, "
+    print(f"\nAnnealing: {args.t_low}->{args.t_high} K, "
           f"{args.num_cycles} cycles, {steps_per_segment} steps/segment")
 
     dyn = Langevin(
@@ -175,7 +173,6 @@ def run_anneal(args, atoms):
 
 
 def main():
-    """CLI entry point: parses args, loads the structure, dispatches to whichever protocol you picked."""
     parser = argparse.ArgumentParser(
         description="Run MD equilibration with an ML potential (ASE).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -272,9 +269,9 @@ def main():
     write(final_path, atoms)
 
     print(f"\nDone. Results in {args.output_dir}/")
-    print(f"  trajectory.traj  (ASE trajectory)")
-    print(f"  md.log           (property time series)")
-    print(f"  final.xyz        (final structure)")
+    print("  trajectory.traj  (ASE trajectory)")
+    print("  md.log           (property time series)")
+    print("  final.xyz        (final structure)")
 
 
 if __name__ == "__main__":

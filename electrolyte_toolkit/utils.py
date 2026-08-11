@@ -3,11 +3,11 @@
 import os
 
 AVOGADRO = 6.02214076e23
-AMU_TO_GRAMS = 1.66053906660e-24  # amu to grams
-ATM_TO_GPA = 1.01325e-4           # atm to GPa
-ATM_TO_EV_A3 = 1.01325e-4 / 160.2176634  # atm to eV/Å³
+AMU_TO_GRAMS = 1.66053906660e-24
+ATM_TO_GPA = 1.01325e-4
+ATM_TO_EV_A3 = 1.01325e-4 / 160.2176634  # via GPa, 160.2176634 GPa per eV/A^3
 
-DEFAULT_MODEL = "orb_v3_conservative_omol"
+DEFAULT_MODEL = "orbmol_v2"
 DEFAULT_TIMESTEP_FS = 1.0
 DEFAULT_TRAJ_INTERVAL = 100
 DEFAULT_PROP_INTERVAL = 10
@@ -33,19 +33,20 @@ def concentration_to_count(conc_mol_per_L: float, box_size_angstrom: float) -> i
 
 
 def total_mass_amu(elements: list[str]) -> float:
-    """Adds up atomic masses for a list of element symbols. Unknown elements fall back to carbon's mass, which is just a placeholder, not a real guess."""
+    """Sum atomic masses. Anything not in the table gets carbon's mass as a placeholder."""
     return sum(ATOMIC_MASSES.get(e, 12.0) for e in elements)
 
 
 def total_mass_grams(elements: list[str]) -> float:
-    """Same as total_mass_amu but in grams, since that's what the density math wants."""
+    """Same as total_mass_amu but in grams, which is what the density math wants."""
     return total_mass_amu(elements) * AMU_TO_GRAMS
 
 
 def parse_pdb_elements(pdb_path: str) -> list[str]:
     """Pulls element symbols out of a PDB's ATOM/HETATM lines.
 
-    Tries the proper element column first, and falls back to guessing from the atom name if that column is missing or blank.
+    Uses the element column when it's there. Plenty of files leave it blank, so
+    fall back to guessing from the atom name.
     """
     elements = []
     with open(pdb_path) as f:
@@ -75,7 +76,7 @@ def parse_pdb_elements(pdb_path: str) -> list[str]:
 def add_cryst1_to_pdb(pdb_path: str, box_size: float):
     """Sticks a CRYST1 record on a PDB so downstream tools know it's periodic.
 
-    Overwrites an existing CRYST1 line if there's already one there.
+    Overwrites the existing one if there already is one.
     """
     cryst1 = (
         f"CRYST1{box_size:9.3f}{box_size:9.3f}{box_size:9.3f}"
@@ -96,7 +97,8 @@ def add_cryst1_to_pdb(pdb_path: str, box_size: float):
 def parse_molecule_spec(spec_str: str, box_size: float) -> tuple[str, str, int]:
     """Splits a 'name:path:amount' spec into its pieces.
 
-    Amount is either a plain integer count or a number ending in 'M', which gets converted to a count based on the box size.
+    Amount is either a plain count or a number ending in M, which gets turned
+    into a count for this box size.
     """
     parts = spec_str.split(":")
     if len(parts) != 3:
@@ -117,7 +119,8 @@ def parse_molecule_spec(spec_str: str, box_size: float) -> tuple[str, str, int]:
 def get_calculator(model: str = DEFAULT_MODEL, device: str | None = None):
     """Builds the ASE calculator that actually runs the ML potential.
 
-    Handles orb-models (the default) and MACE. If you're using something else, this is the function to edit, or just build your own calculator and pass it to run_md directly.
+    Handles orb-models (the default) and MACE. For anything else, edit this
+    function or build your own calculator and hand it to run_md directly.
     """
     import torch
     if device is None:
@@ -125,11 +128,10 @@ def get_calculator(model: str = DEFAULT_MODEL, device: str | None = None):
         if device == "cpu":
             print("WARNING: No CUDA GPU detected, MD will be slow on CPU.")
 
-    # orb-models branch
     if "orb" in model:
         try:
             from orb_models.forcefield import pretrained
-            from orb_models.forcefield.calculator import ORBCalculator
+            from orb_models.forcefield.inference.calculator import ORBCalculator
         except ImportError:
             raise ImportError(
                 "orb-models is not installed.\n"
@@ -144,12 +146,11 @@ def get_calculator(model: str = DEFAULT_MODEL, device: str | None = None):
                 f"Unknown model '{model_name}'. Available:\n  "
                 + "\n  ".join(available)
             )
-        orbff = loader(device=device)
-        calc = ORBCalculator(orbff, device=device)
+        orbff, atoms_adapter = loader(device=device, precision="float32-high")
+        calc = ORBCalculator(orbff, atoms_adapter=atoms_adapter, device=device)
         print(f"Calculator: orb-models / {model_name} on {device}")
         return calc
 
-    # MACE branch
     if "mace" in model:
         try:
             from mace.calculators import mace_mp
@@ -170,7 +171,7 @@ def get_calculator(model: str = DEFAULT_MODEL, device: str | None = None):
 
 
 class ProjectLayout:
-    """Keeps every script pointed at the same directory structure so we're not passing a dozen paths around everywhere.
+    """One place for the directory structure, so the scripts aren't passing a dozen paths around.
 
         inputs/      Avogadro PDB files
         packed/      packed cell output
@@ -184,57 +185,46 @@ class ProjectLayout:
     SUBDIRS = ("inputs", "packed", "nvt", "npt", "anneal", "analysis", "vmd")
 
     def __init__(self, root: str):
-        """Just needs a root directory, everything else gets derived from it."""
         self.root = root
 
     @property
     def inputs(self) -> str:
-        """Where the raw PDB inputs live."""
         return os.path.join(self.root, "inputs")
 
     @property
     def packed_pdb(self) -> str:
-        """Path to the packed system PDB that packmol produces."""
         return os.path.join(self.root, "packed", "system.pdb")
 
     def equilibration_dir(self, protocol: str) -> str:
-        """Output dir for a given protocol (nvt, npt, or anneal)."""
         return os.path.join(self.root, protocol)
 
     def trajectory(self, protocol: str) -> str:
-        """Path to that protocol's trajectory.traj."""
         return os.path.join(self.root, protocol, "trajectory.traj")
 
     def md_log(self, protocol: str) -> str:
-        """Path to that protocol's md.log."""
         return os.path.join(self.root, protocol, "md.log")
 
     def final_structure(self, protocol: str) -> str:
-        """Path to that protocol's final.xyz."""
         return os.path.join(self.root, protocol, "final.xyz")
 
     @property
     def analysis(self) -> str:
-        """Where the diagnostic plots go."""
         return os.path.join(self.root, "analysis")
 
     @property
     def vmd(self) -> str:
-        """Where VMD-ready exports go."""
         return os.path.join(self.root, "vmd")
 
     def vmd_trajectory(self, fmt: str = "xyz") -> str:
-        """Path to the VMD export file, xyz by default."""
         return os.path.join(self.root, "vmd", f"trajectory.{fmt}")
 
     def ensure_dirs(self):
-        """Creates every subdir if it's not already there. Safe to call as many times as you want."""
+        """Safe to call as many times as you want."""
         for d in self.SUBDIRS:
             os.makedirs(os.path.join(self.root, d), exist_ok=True)
 
     def summary(self) -> str:
-        """Printable rundown of where everything lives, handy for a quick sanity check."""
         lines = [f"Project root: {self.root}"]
         for d in self.SUBDIRS:
-            lines.append(f"  {d + '/':12s} → {os.path.join(self.root, d)}")
+            lines.append(f"  {d + '/':12s} -> {os.path.join(self.root, d)}")
         return "\n".join(lines)
