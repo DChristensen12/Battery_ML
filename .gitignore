@@ -13,7 +13,7 @@ env/
 *.swp
 *.swo
 
-# Simulation outputs (large files — keep in project dirs, not in git)
+# Simulation outputs
 #*.traj
 #*.xyz
 #*.log

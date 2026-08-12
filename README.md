@@ -27,7 +27,7 @@ Will contain the scripts for lanthanide and actinide chemistry.
 
 ## Electrolyte Molecular Dynamics Toolkit
 
-The `electrolyte_toolkit/` folder contains modular Python scripts for battery electrolyte molecular dynamics simulations. This is the work directly relating to the research poster shown above.
+The `electrolyte_toolkit/` folder contains modular Python scripts for battery electrolyte molecular dynamics simulations. This is the work directly relating to the research poster and Na-Ion Electrolyte Solvation Boxes shown above.
 
 ### Pipeline
 
