@@ -3,3 +3,4 @@ numpy>=1.20
 matplotlib>=3.5
 torch>=2.0
 orb-models
+fairchem-core

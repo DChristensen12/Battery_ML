@@ -1,41 +1,44 @@
 #!/usr/bin/env python3
-"""NVT + NPT equilibration with persistent local checkpointing.
+"""Electrolyte box equilibration with persistent local checkpointing.
 
-Local script equivalent of the Dataset1 Colab notebook. Runs NVT
-thermalization then NPT density equilibration using OrbMol-v2, with
-checkpoints saved to a local folder. Only the latest checkpoint per
-box is kept. If the run is interrupted, rerun the same command to
-resume from the last checkpoint automatically.
+Supports multiple workflows and potentials:
 
-Outputs go to a per-box folder inside the checkpoint directory:
-    <checkpoint_dir>/<box_name>/
-        ckpt_<phase>_<step>.xyz   (latest checkpoint structure)
-        ckpt_<phase>_<step>.npz   (latest checkpoint logs)
-        <box_name>.xyz            (final equilibrated structure)
-        diagnostics.png           (T, PE, density vs time)
+  Workflows:
+    nvt+npt   NVT thermalization then NPT density relaxation (Dataset 1 style)
+    npt       NPT only, no prior NVT (Dataset 3 / FAIRChem style)
+    nvt       NVT only, no NPT
 
-Requirements:
-    pip install ase torch orb-models numpy matplotlib
+  Potentials:
+    orbmol_v2   OrbMol-v2 (Orbital Materials), trained on OMol25
+    uma         UMA-s-1.2 (FAIRChem/Meta), trained on OMol25
+
+Checkpoints are saved to a local folder. Only the latest checkpoint per
+box is kept. If interrupted, rerun the same command to resume automatically.
+
+Outputs go to: <checkpoint_dir>/<box_name>/
+    ckpt_<phase>_<step>.xyz   latest checkpoint structure
+    ckpt_<phase>_<step>.npz   latest checkpoint logs
+    <box_name>.xyz            final equilibrated structure
+    diagnostics.png           T, PE, density vs time
 
 Examples
 --------
-# Full NVT (50 ps) + NPT (100 ps) from a FIRE-optimized box:
-python equilibrate.py my_box.xyz
+# Dataset 3 style: NPT-only with UMA
+python equilibrate.py my_box.xyz --model uma --workflow npt
 
-# NVT only:
-python equilibrate.py my_box.xyz --nvt-only
+# Dataset 1 style: NVT+NPT with OrbMol-v2
+python equilibrate.py my_box.xyz --model orbmol_v2 --workflow nvt+npt
 
-# NPT only (from an already NVT-equilibrated box):
-python equilibrate.py my_box_nvt.xyz --npt-only
+# NVT only with OrbMol-v2
+python equilibrate.py my_box.xyz --model orbmol_v2 --workflow nvt
 
-# Custom step counts and checkpoint directory:
-python equilibrate.py my_box.xyz --nvt-steps 100000 --npt-steps 200000 \
-    --checkpoint-dir ./my_checkpoints
+# Custom steps
+python equilibrate.py my_box.xyz --model uma --workflow npt --npt-steps 50000
 
-# Resume an interrupted run (auto-detected from checkpoint dir):
+# Resume an interrupted run
 python equilibrate.py --resume my_box_name
 
-# Check status of all boxes:
+# Check status of all boxes
 python equilibrate.py --status
 """
 
@@ -54,22 +57,48 @@ NPT_STEPS = 100000     # 100 ps
 CHECKPOINT_EVERY = 5000
 LOG_EVERY = 100
 TEMPERATURE = 300.0     # K
-PRESSURE_ATM = 1.0
 
 try:
-    from utils import get_calculator as _get_calc, DEFAULT_MODEL, ATM_TO_EV_A3
+    from utils import get_calculator as _get_calc, ATM_TO_EV_A3
 except ImportError:
-    # not run from inside the toolkit dir
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from utils import get_calculator as _get_calc, DEFAULT_MODEL, ATM_TO_EV_A3
+    from utils import get_calculator as _get_calc, ATM_TO_EV_A3
 
 
-def get_calculator(device="cuda"):
-    import torch
-    if device == "cuda" and not torch.cuda.is_available():
-        print("WARNING: No CUDA GPU detected, falling back to CPU. This will be slow.")
-        device = "cpu"
-    return _get_calc(DEFAULT_MODEL, device=device)
+NPT_PARAMS = {
+    "orbmol_v2": {
+        "externalstress_eV_A3": 0.000101325 * 0.006242,
+        "ttime_fs": 25.0,
+        "pfactor_val": lambda fs: (75.0 * fs) ** 2 * 1.0 * 0.006242,
+        "mask": None,
+    },
+    "uma": {
+        "externalstress_bar": 1.0,
+        "ttime_fs": 100.0,
+        "pfactor_val": lambda fs: 0.1,
+        "mask": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+    },
+}
+
+
+def get_npt_kwargs(model, units_mod):
+    """Return the NPT constructor kwargs for the given model."""
+    if model.startswith("uma"):
+        p = NPT_PARAMS["uma"]
+        kwargs = dict(
+            externalstress=p["externalstress_bar"] * units_mod.bar,
+            ttime=p["ttime_fs"] * units_mod.fs,
+            pfactor=p["pfactor_val"](units_mod.fs),
+            mask=p["mask"],
+        )
+    else:
+        p = NPT_PARAMS["orbmol_v2"]
+        kwargs = dict(
+            externalstress=p["externalstress_eV_A3"],
+            ttime=p["ttime_fs"] * units_mod.fs,
+            pfactor=p["pfactor_val"](units_mod.fs),
+        )
+    return kwargs
 
 
 def box_dir(checkpoint_dir, name):
@@ -79,9 +108,7 @@ def box_dir(checkpoint_dir, name):
 
 
 def save_checkpoint(atoms, checkpoint_dir, name, step, phase, temps, pes, densities=None):
-    """Save checkpoint; delete older ones so only the latest exists."""
     from ase.io import write
-
     d = box_dir(checkpoint_dir, name)
     for f in glob.glob(os.path.join(d, "ckpt_*.xyz")):
         os.remove(f)
@@ -89,8 +116,7 @@ def save_checkpoint(atoms, checkpoint_dir, name, step, phase, temps, pes, densit
         os.remove(f)
 
     write(os.path.join(d, f"ckpt_{phase}_{step}.xyz"), atoms, format="extxyz")
-    save_data = dict(step=step, phase=phase,
-                     temps=np.array(temps), pes=np.array(pes))
+    save_data = dict(step=step, phase=phase, temps=np.array(temps), pes=np.array(pes))
     if densities is not None:
         save_data["densities"] = np.array(densities)
     np.savez(os.path.join(d, f"ckpt_{phase}_{step}.npz"), **save_data)
@@ -100,15 +126,12 @@ def save_checkpoint(atoms, checkpoint_dir, name, step, phase, temps, pes, densit
 
 
 def load_checkpoint(checkpoint_dir, name):
-    """Load latest checkpoint. Returns (atoms, step, phase, temps, pes, densities)."""
     from ase.io import read
-
     d = box_dir(checkpoint_dir, name)
     xyzs = sorted(glob.glob(os.path.join(d, "ckpt_*.xyz")))
     npzs = sorted(glob.glob(os.path.join(d, "ckpt_*.npz")))
     if not xyzs or not npzs:
         return None, 0, None, [], [], []
-
     atoms = read(xyzs[-1])
     data = np.load(npzs[-1], allow_pickle=True)
     densities = data["densities"].tolist() if "densities" in data else []
@@ -116,9 +139,21 @@ def load_checkpoint(checkpoint_dir, name):
             data["temps"].tolist(), data["pes"].tolist(), densities)
 
 
-def run_nvt(atoms, name, checkpoint_dir, n_steps=NVT_STEPS, start_step=0,
+def check_convergence(densities, threshold_pct=1.0):
+    n = len(densities)
+    if n < 100:
+        return False, float("inf"), 0.0
+    window = n // 5
+    prev = densities[-(2 * window):-window]
+    last = densities[-window:]
+    mean_prev = np.mean(prev)
+    mean_last = np.mean(last)
+    drift = 100 * abs(mean_last - mean_prev) / mean_last
+    return drift < threshold_pct, drift, mean_last
+
+
+def run_nvt(atoms, name, checkpoint_dir, model, n_steps=NVT_STEPS, start_step=0,
             prev_temps=None, prev_pes=None, device="cuda"):
-    """Run NVT Langevin dynamics with checkpointing."""
     import torch
     from ase.md.langevin import Langevin
     from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
@@ -129,7 +164,7 @@ def run_nvt(atoms, name, checkpoint_dir, n_steps=NVT_STEPS, start_step=0,
     atoms.info["spin"] = 1
 
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
-    atoms.calc = get_calculator(device)
+    atoms.calc = _get_calc(model, device=device)
 
     if start_step == 0:
         MaxwellBoltzmannDistribution(atoms, temperature_K=TEMPERATURE)
@@ -148,8 +183,7 @@ def run_nvt(atoms, name, checkpoint_dir, n_steps=NVT_STEPS, start_step=0,
     def logger():
         T = atoms.get_temperature()
         pe = atoms.get_potential_energy() / len(atoms)
-        temps.append(T)
-        pes.append(pe)
+        temps.append(T); pes.append(pe)
         step = dyn.nsteps
         if step % 1000 == 0:
             elapsed = time.time() - t0
@@ -175,12 +209,11 @@ def run_nvt(atoms, name, checkpoint_dir, n_steps=NVT_STEPS, start_step=0,
     return atoms, temps, pes
 
 
-def run_npt(atoms, name, checkpoint_dir, n_steps=NPT_STEPS, start_step=0,
+def run_npt(atoms, name, checkpoint_dir, model, n_steps=NPT_STEPS, start_step=0,
             prev_temps=None, prev_pes=None, prev_densities=None, device="cuda"):
-    """Run NPT dynamics with checkpointing and density tracking."""
     import torch
     from ase.io import write
-    from ase.md.npt import NPT
+    from ase.md.melchionna import MelchionnaNPT as NPT
     from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
     from ase import units
 
@@ -189,18 +222,14 @@ def run_npt(atoms, name, checkpoint_dir, n_steps=NPT_STEPS, start_step=0,
     atoms.info["spin"] = 1
     total_mass = sum(atoms.get_masses())
 
-    pressure_eV_A3 = PRESSURE_ATM * ATM_TO_EV_A3
-    bulk_mod_eV_A3 = 1.0 * 0.006242  # ~1 GPa for organic liquids
-    pfactor = (75.0 * units.fs) ** 2 * bulk_mod_eV_A3
-
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
-    atoms.calc = get_calculator(device)
+    atoms.calc = _get_calc(model, device=device)
 
     if start_step == 0:
         MaxwellBoltzmannDistribution(atoms, temperature_K=TEMPERATURE)
 
-    dyn = NPT(atoms, timestep=1.0 * units.fs, temperature_K=TEMPERATURE,
-              externalstress=pressure_eV_A3, ttime=25 * units.fs, pfactor=pfactor)
+    npt_kwargs = get_npt_kwargs(model, units)
+    dyn = NPT(atoms, timestep=1.0 * units.fs, temperature_K=TEMPERATURE, **npt_kwargs)
     dyn.nsteps = start_step
 
     temps = list(prev_temps or [])
@@ -217,16 +246,20 @@ def run_npt(atoms, name, checkpoint_dir, n_steps=NPT_STEPS, start_step=0,
         T = atoms.get_temperature()
         pe = atoms.get_potential_energy() / len(atoms)
         rho = total_mass / atoms.get_volume() * 1.66054
-        temps.append(T)
-        pes.append(pe)
-        densities.append(rho)
+        temps.append(T); pes.append(pe); densities.append(rho)
         step = dyn.nsteps
         if step % 1000 == 0:
             elapsed = time.time() - t0
             rate = (step - start_step) / elapsed if elapsed > 0 else 0
             eta = (n_steps - step) / rate / 60 if rate > 0 else 0
+            conv_str = ""
+            converged, drift, mean_rho = check_convergence(densities)
+            if converged:
+                conv_str = f" ** CONVERGED (drift={drift:.2f}%, mean={mean_rho:.4f}) **"
+            elif drift < float("inf"):
+                conv_str = f" (drift={drift:.1f}%)"
             print(f"    step {step:6d}/{n_steps}  T={T:.1f}K  rho={rho:.4f}  "
-                  f"PE={pe:.4f}  [{rate:.1f} st/s, ETA {eta:.0f}m]", flush=True)
+                  f"PE={pe:.4f}  [{rate:.1f} st/s, ETA {eta:.0f}m]{conv_str}", flush=True)
 
     def checkpointer():
         step = dyn.nsteps
@@ -243,8 +276,7 @@ def run_npt(atoms, name, checkpoint_dir, n_steps=NPT_STEPS, start_step=0,
 
     dyn.run(remaining)
 
-    save_checkpoint(atoms, checkpoint_dir, name, n_steps, "npt",
-                    temps, pes, densities)
+    save_checkpoint(atoms, checkpoint_dir, name, n_steps, "npt", temps, pes, densities)
     final_path = os.path.join(box_dir(checkpoint_dir, name), f"{name}.xyz")
     write(final_path, atoms, format="extxyz")
 
@@ -253,7 +285,9 @@ def run_npt(atoms, name, checkpoint_dir, n_steps=NPT_STEPS, start_step=0,
     if has_nan:
         print("  WARNING: NaN in final positions!", flush=True)
     else:
-        print(f"  DONE: rho {rho0:.4f} -> {rho_f:.4f} g/cm3", flush=True)
+        converged, drift, mean_rho = check_convergence(densities)
+        status = "CONVERGED" if converged else f"NOT CONVERGED (drift={drift:.1f}%)"
+        print(f"  DONE: rho {rho0:.4f} -> {rho_f:.4f} g/cm3 | {status}", flush=True)
         print(f"  Final: {final_path}", flush=True)
 
     return atoms, temps, pes, densities
@@ -289,7 +323,9 @@ def plot_diagnostics(name, checkpoint_dir, temps, pes, densities=None):
         axes[2].plot(t_rho, densities, alpha=0.3, lw=0.5)
         if w > 1:
             axes[2].plot(t_rho[w - 1:], np.convolve(densities, np.ones(w) / w, "valid"), "r", lw=1.5)
-        axes[2].set(xlabel="Time (ps)", ylabel="Density (g/cm3)", title="Density")
+        converged, drift, mean_rho = check_convergence(densities)
+        status = f"CONVERGED (rho={mean_rho:.4f})" if converged else f"drift={drift:.1f}%"
+        axes[2].set(xlabel="Time (ps)", ylabel="Density (g/cm3)", title=f"Density, {status}")
 
     plt.suptitle(name, fontsize=12)
     plt.tight_layout()
@@ -342,25 +378,27 @@ def print_status(checkpoint_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NVT + NPT equilibration with OrbMol-v2 and local checkpointing.",
+        description="Electrolyte box equilibration with checkpointing.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument("input", nargs="?",
-                        help="Input .xyz file (FIRE-optimized or NVT-equilibrated box)")
+                        help="Input .xyz file (FIRE-optimized or NVT-equilibrated)")
     parser.add_argument("--name",
-                        help="Box name (default: derived from input filename)")
+                        help="Box name (default: from filename)")
     parser.add_argument("--checkpoint-dir", default=DEFAULT_CHECKPOINT_DIR,
                         help=f"Checkpoint directory (default: {DEFAULT_CHECKPOINT_DIR})")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument("--model", default="uma",
+                        choices=["orbmol_v2", "uma"],
+                        help="ML potential (default: uma)")
+    parser.add_argument("--workflow", default="npt",
+                        choices=["npt", "nvt", "nvt+npt"],
+                        help="Equilibration workflow (default: npt)")
 
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--nvt-only", action="store_true",
-                      help="Run NVT only (skip NPT)")
-    mode.add_argument("--npt-only", action="store_true",
-                      help="Run NPT only (skip NVT)")
     mode.add_argument("--resume", metavar="BOX_NAME",
-                      help="Resume a previously interrupted run by box name")
+                      help="Resume a previously interrupted run")
     mode.add_argument("--status", action="store_true",
                       help="Print status of all boxes and exit")
 
@@ -370,7 +408,6 @@ def main():
                         help=f"NPT steps (default: {NPT_STEPS})")
 
     args = parser.parse_args()
-
     os.makedirs(args.checkpoint_dir, exist_ok=True)
 
     if args.status:
@@ -381,65 +418,50 @@ def main():
         name = args.resume
         atoms, step, phase, prev_t, prev_pe, prev_rho = load_checkpoint(
             args.checkpoint_dir, name)
-
         if atoms is None:
             print(f"No checkpoint found for '{name}' in {args.checkpoint_dir}")
             sys.exit(1)
 
-        print(f"\nResuming: {name}")
-        print(f"  Phase: {phase}, Step: {step}")
-        print(f"  Atoms: {len(atoms)}")
+        print(f"\nResuming: {name} (model: {args.model})")
+        print(f"  Phase: {phase}, Step: {step}, Atoms: {len(atoms)}")
 
-        all_temps = list(prev_t)
-        all_pes = list(prev_pe)
-        all_densities = list(prev_rho)
+        all_temps, all_pes, all_densities = list(prev_t), list(prev_pe), list(prev_rho)
 
         if phase == "nvt" and step < args.nvt_steps:
-            print(f"\n{'=' * 60}")
-            print(f"  Resuming NVT: {name} from step {step}")
-            print(f"{'=' * 60}")
+            print(f"\nResuming NVT: {name} from step {step}")
             atoms, temps, pes = run_nvt(
-                atoms, name, args.checkpoint_dir,
+                atoms, name, args.checkpoint_dir, args.model,
                 n_steps=args.nvt_steps, start_step=step,
                 prev_temps=prev_t, prev_pes=prev_pe, device=args.device)
-            all_temps = list(temps)
-            all_pes = list(pes)
+            all_temps, all_pes = list(temps), list(pes)
 
-            if not args.nvt_only:
-                print(f"\n{'=' * 60}")
-                print(f"  NPT: {name}")
-                print(f"{'=' * 60}")
+            if args.workflow == "nvt+npt":
+                print(f"\nNPT: {name}")
                 atoms, temps, pes, densities = run_npt(
-                    atoms, name, args.checkpoint_dir,
+                    atoms, name, args.checkpoint_dir, args.model,
                     n_steps=args.npt_steps, device=args.device)
-                all_temps.extend(temps)
-                all_pes.extend(pes)
+                all_temps.extend(temps); all_pes.extend(pes)
                 all_densities = list(densities)
 
         elif phase == "nvt" and step >= args.nvt_steps:
-            print("NVT complete.")
-            if not args.nvt_only:
-                print(f"\n{'=' * 60}")
-                print(f"  NPT: {name}")
-                print(f"{'=' * 60}")
+            if args.workflow == "nvt+npt":
+                print(f"\nNPT: {name}")
                 atoms, temps, pes, densities = run_npt(
-                    atoms, name, args.checkpoint_dir,
+                    atoms, name, args.checkpoint_dir, args.model,
                     n_steps=args.npt_steps, device=args.device)
-                all_temps.extend(temps)
-                all_pes.extend(pes)
+                all_temps.extend(temps); all_pes.extend(pes)
                 all_densities = list(densities)
+            else:
+                print("NVT already complete.")
 
         elif phase == "npt" and step < args.npt_steps:
-            print(f"\n{'=' * 60}")
-            print(f"  Resuming NPT: {name} from step {step}")
-            print(f"{'=' * 60}")
+            print(f"\nResuming NPT: {name} from step {step}")
             atoms, temps, pes, densities = run_npt(
-                atoms, name, args.checkpoint_dir,
+                atoms, name, args.checkpoint_dir, args.model,
                 n_steps=args.npt_steps, start_step=step,
                 prev_temps=prev_t, prev_pes=prev_pe,
                 prev_densities=prev_rho, device=args.device)
-            all_temps = list(temps)
-            all_pes = list(pes)
+            all_temps, all_pes = list(temps), list(pes)
             all_densities = list(densities)
 
         elif phase == "npt" and step >= args.npt_steps:
@@ -454,46 +476,39 @@ def main():
     if not args.input:
         parser.error("Provide an input .xyz file, --resume BOX_NAME, or --status")
 
-    from ase.io import read
+    from ase.io import read, write
 
     name = args.name or os.path.basename(args.input).replace("_opt.xyz", "").replace(".xyz", "")
 
     print(f"\nBox:          {name}")
     print(f"Input:        {args.input}")
+    print(f"Model:        {args.model}")
+    print(f"Workflow:     {args.workflow}")
     print(f"Checkpoints:  {args.checkpoint_dir}/{name}/")
     print(f"Device:       {args.device}")
 
     atoms = read(args.input)
     print(f"Loaded: {len(atoms)} atoms, cell = {atoms.cell.lengths()}")
 
-    all_temps = []
-    all_pes = []
-    all_densities = []
+    all_temps, all_pes, all_densities = [], [], []
 
-    if not args.npt_only:
-        print(f"\n{'=' * 60}")
-        print(f"  NVT thermalization: {name}")
-        print(f"{'=' * 60}")
+    if args.workflow in ("nvt", "nvt+npt"):
+        print(f"\nNVT thermalization: {name}")
         atoms, temps, pes = run_nvt(
-            atoms, name, args.checkpoint_dir,
+            atoms, name, args.checkpoint_dir, args.model,
             n_steps=args.nvt_steps, device=args.device)
-        all_temps.extend(temps)
-        all_pes.extend(pes)
+        all_temps.extend(temps); all_pes.extend(pes)
 
-        from ase.io import write
         nvt_path = os.path.join(box_dir(args.checkpoint_dir, name), f"{name}_nvt.xyz")
         write(nvt_path, atoms, format="extxyz")
         print(f"  NVT structure: {nvt_path}")
 
-    if not args.nvt_only:
-        print(f"\n{'=' * 60}")
-        print(f"  NPT density equilibration: {name}")
-        print(f"{'=' * 60}")
+    if args.workflow in ("npt", "nvt+npt"):
+        print(f"\nNPT density equilibration: {name}")
         atoms, temps, pes, densities = run_npt(
-            atoms, name, args.checkpoint_dir,
+            atoms, name, args.checkpoint_dir, args.model,
             n_steps=args.npt_steps, device=args.device)
-        all_temps.extend(temps)
-        all_pes.extend(pes)
+        all_temps.extend(temps); all_pes.extend(pes)
         all_densities = list(densities)
 
     plot_diagnostics(name, args.checkpoint_dir, all_temps, all_pes,

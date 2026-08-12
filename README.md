@@ -6,32 +6,45 @@ This Repository is being used for machine learning simulations to study the mole
 
 ![Research Poster](Research/URF_Research_Poster.png)
 
-## Datasets
+## Dataset: Na-Ion Electrolyte Solvation Boxes
 
-### Dataset 1:
+[![Dataset on HF](https://huggingface.co/datasets/huggingface/badges/resolve/main/dataset-on-hf-md.svg)](https://huggingface.co/datasets/DChristensen12/na-ion-electrolyte-solvation-boxes)
 
-Initial configurations are packed with Packmol and geometry-optimized with the FIRE algorithm. Systems are then equilibrated in two stages: NVT Langevin dynamics (50 ps, 300 K) to thermalize the structure, followed by NPT dynamics (100 ps, 300 K, 1 atm) to relax the box volume to equilibrium density. 
-Both stages used the OrbMol-v2 potential (Orbital Materials), trained on the OMol25 dataset.
+Published on Hugging Face as a single repository with multiple subsets. Covers 9 sodium salts, 21 solvents/cosolvents, and concentrations from 0.1 M through 21 M across carbonate, ether, glyme, ionic liquid, phosphate, and aqueous systems. Both MLIPs were trained on the OMol25 dataset.
 
+| Subset | Boxes | What it is |
+|--------|-------|------------|
+| `NPT_FAIRChem-UMA/` | 83 | NPT equilibrated (300 K, 1 atm) with UMA-s-1.2 (FAIRChem/Meta). Density-validated. |
+| `NVT_OrbMolV2/` | 79 | NVT thermalized (50 ps, 300 K) with OrbMol-v2 (Orbital Materials). Fixed volume, no density adjustment. |
+| `NVT_OrbMolV2/npt_extended/` | 4 | Subset of NVT boxes further equilibrated with NPT using OrbMol-v2. |
+| `molecules/` | 32 | Individual molecule PDB files used as Packmol inputs. |
 
-### Dataset 2:
+See the [dataset README](data/na-electrolyte-solvation-boxes/README.md) for the full file list, naming convention, and abbreviation tables.
 
-Configurations equilibrated under NPT with OPLS-AA and the OMol25-trained UMA potential (which is FAIRChem)
+## Deep-Shell
 
-### Dataset 3:
+Will contain the scripts for lanthanide and actinide chemistry.
 
-Initial configurations were packed with Packmol and geometry-optimized with the FIRE algorithm. Systems were then equilibrated with NPT dynamics (100 ps, 300 K, 1 atm) to relax the box volume to equilibrium density. The run used the UMA potential (FAIRChem), trained on the OMol25 dataset.
+## Electrolyte Molecular Dynamics Toolkit
 
-## Electrolyte MD Toolkit
+The `electrolyte_toolkit/` folder contains modular Python scripts for battery electrolyte molecular dynamics simulations. This is the work directly relating to the research poster shown above.
 
-The electrolyte_toolkit folder in SolvationNet contains modular Python scripts for battery electrolyte molecular dynamics simulations. In particular, this is the work directly relating to the research poster shown above (adaptation of the `SIB.ipynb` and uses data from `data/geometries`).
-
-It takes geometry-optimized PDB files from Avogadro (you can make the files elsewhere, it only has to be in a .pdb format when used here), packs them into a simulation
-cell, runs equilibration with an ML potential, checks convergence, and exports
-trajectories for VMD visualization (or wherever you'd want to visualize the trajectory file also works).
+### Pipeline
 
 ```
-Avogadro (.pdb) --> pack_cell.py --> run_md.py --> analyze_trajectory.py --> export_vmd.py --> VMD
+Input geometries (.pdb)
+    │
+    ▼
+pack_cell.py          Pack molecules into a periodic box (Packmol)
+    │
+    ▼
+equilibrate.py        NVT and/or NPT equilibration with checkpointing
+    │
+    ▼
+analyze_trajectory.py   Diagnostic plots (T, PE, density vs time)
+    │
+    ▼
+export_vmd.py         Export trajectory for VMD visualization
 ```
 
 ### Setup
@@ -45,7 +58,6 @@ Avogadro (.pdb) --> pack_cell.py --> run_md.py --> analyze_trajectory.py --> exp
 #### Quick Start
 
 ```bash
-# Clone or copy this directory, then:
 cd electrolyte_toolkit
 ./setup.sh
 ```
@@ -54,8 +66,6 @@ cd electrolyte_toolkit
 checks that Packmol and a GPU are available.
 
 #### Manual Setup
-
-If you prefer to set things up yourself:
 
 ```bash
 python -m venv venv
@@ -80,10 +90,123 @@ python -c "import ase; import torch; print('OK')"
 packmol < /dev/null   # should print Packmol banner, not "command not found"
 ```
 
+### equilibrate.py
+
+The main equilibration script. Supports multiple workflows and potentials with persistent checkpointing. If it gets interrupted, rerun the same command and it picks up where it left off. Only the latest checkpoint per box is kept.
+
+```bash
+# NPT-only with FAIRChem UMA (default)
+python equilibrate.py my_box.xyz --model uma --workflow npt
+
+# NVT+NPT with OrbMol-v2
+python equilibrate.py my_box.xyz --model orbmol_v2 --workflow nvt+npt
+
+# NVT only
+python equilibrate.py my_box.xyz --model orbmol_v2 --workflow nvt
+
+# Custom step counts
+python equilibrate.py my_box.xyz --model uma --workflow npt --npt-steps 50000
+
+# Resume an interrupted run
+python equilibrate.py --resume my_box_name --model uma
+
+# Check status of all boxes
+python equilibrate.py --status
+```
+
+| Flag | Values | Default | Description |
+|------|--------|---------|-------------|
+| `--model` | `uma`, `orbmol_v2` | `uma` | ML potential |
+| `--workflow` | `npt`, `nvt`, `nvt+npt` | `npt` | Equilibration protocol |
+| `--nvt-steps` | integer | 50000 | NVT steps (50 ps at 1 fs) |
+| `--npt-steps` | integer | 100000 | NPT steps (100 ps at 1 fs) |
+| `--device` | `cuda`, `cpu` | `cuda` | Compute device |
+| `--checkpoint-dir` | path | `~/electrolyte_equilibration` | Checkpoint storage |
+| `--resume` | box name | none | Resume from last checkpoint |
+| `--status` | flag | off | Print status of all boxes |
+
+NPT parameters are set automatically per model. UMA gets `externalstress=1 bar`, `pfactor=0.1`, `ttime=100 fs` and an isotropic mask. OrbMol-v2 gets `externalstress` in eV/Å³, `pfactor=(75 fs)²·bulk_mod`, `ttime=25 fs`.
+
+Live output includes a density convergence check (drift < 1% = converged).
+
+### pack_cell.py
+
+Packs molecules into a cubic periodic box using Packmol.
+
+```bash
+python pack_cell.py --project ./my-project \
+  -m Na:inputs/Na.pdb:0.5M \
+  -m PF6:inputs/PF6.pdb:0.5M \
+  -m DME:inputs/DME.pdb:200 \
+  --box-size 30
+```
+
+Amounts can be molar concentrations (`0.5M`) or explicit counts (`200`). Use `--dry-run` to preview without running, `--seed 42` for reproducible packing.
+
+### run_md.py
+
+Single-phase MD without checkpointing. Good for quick tests. Supports NVT, NPT, and annealing.
+
+```bash
+python run_md.py --project ./my-project -p npt -T 300 -P 1.0 -n 100000
+python run_md.py --project ./my-project -p anneal --t-low 300 --t-high 500 --total-steps 200000 --num-cycles 5
+```
+
+### analyze_trajectory.py
+
+Plots temperature, density, and energy vs time from a completed run.
+
+```bash
+python analyze_trajectory.py --project ./my-project --protocol npt
+```
+
+### export_vmd.py
+
+Converts ASE trajectories to extended XYZ or multi-model PDB for VMD.
+
+```bash
+python export_vmd.py --project ./my-project --protocol npt --stride 10
+```
+
+### ML Potentials
+
+The toolkit supports three ML potential families via `utils.get_calculator()`:
+
+| Model | Install | Description |
+|-------|---------|-------------|
+| `uma` | `pip install fairchem-core` | UMA-s-1.2 (FAIRChem/Meta), trained on OMol25. HuggingFace login required. |
+| `orbmol_v2` | `pip install orb-models` | OrbMol-v2 (Orbital Materials), trained on OMol25. Includes learnable electrostatics. |
+| `mace_*` | `pip install mace-torch` | MACE-MP-0 (Materials Project). General-purpose, full periodic table. |
+
+To use a specific model, pass `--model` to `equilibrate.py` or `run_md.py`. To add a new calculator, edit `get_calculator()` in `utils.py`.
+
+### File Reference
+
+| File | Purpose |
+|------|---------|
+| `utils.py` | Shared constants, calculator factory (UMA, OrbMol, MACE), project layout |
+| `pack_cell.py` | Pack molecules into a periodic box (Packmol wrapper) |
+| `equilibrate.py` | NVT/NPT equilibration with checkpointing and resume |
+| `run_md.py` | Single-phase MD (NVT, NPT, annealing) without checkpointing |
+| `analyze_trajectory.py` | Equilibration diagnostic plots |
+| `export_vmd.py` | Trajectory export for VMD |
+| `requirements.txt` | Python dependencies |
+| `setup.sh` | One-command environment setup |
+
+### Colab Notebooks
+
+Google Colab notebooks for running equilibration on cloud GPUs with persistent checkpointing to Google Drive:
+
+| Notebook | Workflow |
+|----------|----------|
+| `NVT_OrbMolV2_Equilibration.ipynb` | NVT + NPT with OrbMol-v2 |
+| `NPT_FAIRChem-UMA_Equilibration.ipynb` | NPT-only with FAIRChem UMA |
+
+Located in `notebooks/`. Upload input boxes, run cells, checkpoints save to Drive automatically. If runtime disconnects, reconnect and resume from the last checkpoint.
+
 ### Project Directory Layout
 
-Every run uses a **project directory** that keeps inputs and outputs organized.
-Pass `--project <dir>` to any script and it auto-derives all file paths:
+When using `--project`, scripts auto-derive paths from this structure:
 
 ```
 my-project/
@@ -96,174 +219,4 @@ my-project/
   vmd/          VMD-ready trajectory exports (.xyz or .pdb)
 ```
 
-You don't have to use `--project`. Every script also accepts explicit paths
-(`--input`, `--output`, etc.) if you want to organize differently.
-
-### Pipeline Walkthrough
-
-#### Example: 1 M NaPF6 in 1,2-DME
-
-##### 1. Prepare Input Structures
-
-Optimize each molecule's geometry in Avogadro and export as PDB. Place
-the files in your project's `inputs/` folder:
-
-```
-my-project/inputs/Na.pdb
-my-project/inputs/PF6.pdb
-my-project/inputs/DME.pdb
-```
-
-##### 2. Pack the Simulation Cell
-
-```bash
-python pack_cell.py --project ./my-project \
-  -m Na:my-project/inputs/Na.pdb:0.5M \
-  -m PF6:my-project/inputs/PF6.pdb:0.5M \
-  -m DME:my-project/inputs/DME.pdb:200 \
-  --box-size 30
-```
-
-- `-m name:path:amount` specifies each molecule. Amount is either:
-  - A molar concentration like `0.5M` (script computes molecule count from box volume)
-  - An explicit integer count like `200`
-- `--box-size 30` creates a 30 x 30 x 30 angstrom cubic cell
-- Output: `my-project/packed/system.pdb` with a CRYST1 record for periodic boundaries
-
-Use `--dry-run` to preview the Packmol input without running it.
-Use `--seed 42` for reproducible packing.
-
-##### 3. Run Equilibration
-
-Choose one of three protocols:
-
-**NVT** (constant volume + temperature):
-```bash
-python run_md.py --project ./my-project -p nvt \
-  -T 300 -n 50000
-```
-
-**NPT** (constant pressure + temperature):
-```bash
-python run_md.py --project ./my-project -p npt \
-  -T 300 -P 1.0 -n 100000
-```
-
-**Annealing** (cyclic heating/cooling):
-```bash
-python run_md.py --project ./my-project -p anneal \
-  --t-low 300 --t-high 500 \
-  --total-steps 200000 --num-cycles 5
-```
-
-Each protocol produces three files in its output directory (e.g. `npt/`):
-
-| File | Contents |
-|------|----------|
-| `trajectory.traj` | Full atomic trajectory (positions, cell, velocities) |
-| `md.log` | Property time series (time, energy, temperature) |
-| `final.xyz` | Last frame of the simulation |
-
-Key options:
-- `-T` / `--temperature`: temperature in Kelvin (default: 300)
-- `-P` / `--pressure`: pressure in atm for NPT (default: 1.0)
-- `-n` / `--steps`: number of MD steps (NVT/NPT)
-- `-dt` / `--timestep`: timestep in femtoseconds (default: 1.0)
-- `--model`: ML potential model name (default: `orb_v3_conservative_omol`)
-- `--device`: `cuda` or `cpu` (auto-detected if omitted)
-- `--force`: overwrite previous outputs (safe re-runs)
-
-##### 4. Check Equilibration
-
-```bash
-python analyze_trajectory.py --project ./my-project --protocol npt
-```
-
-Generates three PNG plots in `my-project/analysis/`:
-
-- **temperature_vs_time.png**: should flatten to a stable mean
-- **density_vs_time.png**: should converge/be constant (meaningful for NPT; constant for NVT)
-- **energy_vs_time.png**: potential energy should plateau
-
-Each plot includes a running average overlay and the script prints summary
-statistics (mean, std, drift) for the last 25% of the trajectory.
-
-If the system hasn't equilibrated, run more steps or try annealing first.
-
-##### 5. Export for VMD
-
-```bash
-python export_vmd.py --project ./my-project --protocol npt --stride 10
-```
-
-Converts the ASE trajectory to extended XYZ (default) or multi-model PDB:
-
-```bash
-# XYZ (default, recommended):
-python export_vmd.py --project ./my-project --protocol npt
-
-# PDB format:
-python export_vmd.py --project ./my-project --protocol npt -f pdb
-```
-
-`--stride 10` writes every 10th frame to reduce file size.
-
-Open in VMD:
-```bash
-vmd my-project/vmd/trajectory.xyz
-```
-
-### ML Potential
-
-The default potential is **orb-v3-conservative-omol** from
-[Orbital Materials](https://github.com/orbital-materials/orb-models), which was
-trained on the OMol dataset of organic molecules and is well-suited for battery
-electrolyte environments. I set this so that it wouldn't randomly break if not presented with a ML Potential.
-
-To use a different potential, pass `--model` to `run_md.py`:
-
-```bash
-# MACE foundation model (install: pip install mace-torch)
-python run_md.py --project ./my-project -p nvt -T 300 -n 50000 \
-  --model mace_mp
-
-# Different Orb checkpoint
-python run_md.py --project ./my-project -p nvt -T 300 -n 50000 \
-  --model orb_v3_conservative_inf_omat
-```
-
-To plug in a completely different ASE calculator, edit `get_calculator()` in
-`utils.py`.
-
-### File Reference
-
-| File | Purpose |
-|------|---------|
-| `utils.py` | Shared constants, atomic masses, PDB parsing, calculator factory, project layout |
-| `pack_cell.py` | Pack molecules into a cubic cell (wraps Packmol) |
-| `run_md.py` | Run MD equilibration: NVT, NPT, or annealing (ASE + ML potential) |
-| `analyze_trajectory.py` | Plot temperature, density, and energy vs time |
-| `export_vmd.py` | Convert ASE trajectory to XYZ/PDB for VMD |
-| `requirements.txt` | Python dependencies |
-| `setup.sh` | One-command environment setup |
-
-### Typical Equilibration Workflow
-
-For a new electrolyte system, a common strategy is:
-
-1. Anneal first to escape bad initial packing. Heat to 500 K and cool back
-   to 300 K over several cycles.
-2. Run NPT equilibration at the target temperature and 1 atm to let the density
-   converge
-3. Check the density and temperature plots. If they've plateaued, the system
-   is equilibrated.
-4. Use the `final.xyz` from the NPT run as input for production MD or further
-   analysis
-
-# Current Status/Updates:
-
-Currently equilibrating boxes of mixtures that I found to be of interest via literature searchs. I also am going to make some
-changes with the scripts and ensure it runs more smoothly. The resulting dataset will also be uploaded to hugging face.
-There will be two datasets created!
-
-Stay tuned!
+You don't have to use `--project`. Every script also accepts explicit paths (`--input`, `--output`, etc.).

@@ -117,16 +117,38 @@ def parse_molecule_spec(spec_str: str, box_size: float) -> tuple[str, str, int]:
 
 
 def get_calculator(model: str = DEFAULT_MODEL, device: str | None = None):
-    """Builds the ASE calculator that actually runs the ML potential.
+    """Builds the ASE calculator for the given model.
 
-    Handles orb-models (the default) and MACE. For anything else, edit this
-    function or build your own calculator and hand it to run_md directly.
+    Supported models:
+        'orbmol_v2'     OrbMol-v2 (Orbital Materials), trained on OMol25
+        'uma'           UMA-s-1.2 (FAIRChem/Meta), trained on OMol25
+        'mace_small'    MACE-MP-0 small (Materials Project)
+        Any orb-models name (e.g. 'orb_v3_conservative_inf_omat')
     """
     import torch
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         if device == "cpu":
             print("WARNING: No CUDA GPU detected, MD will be slow on CPU.")
+
+    if model.startswith("uma"):
+        try:
+            from fairchem.core import pretrained_mlip, FAIRChemCalculator
+        except ImportError:
+            raise ImportError(
+                "fairchem-core is not installed.\n"
+                "  pip install fairchem-core\n"
+                "  UMA checkpoints are gated, run: from huggingface_hub import login; login()"
+            )
+        uma_name = "uma-s-1p2" if model == "uma" else model.replace("_", "-")
+        predictor = pretrained_mlip.get_predict_unit(uma_name, device=device)
+        if hasattr(predictor, 'model'):
+            predictor.model.use_checkpoint = False
+        elif hasattr(predictor, 'inference_model'):
+            predictor.inference_model.use_checkpoint = False
+        calc = FAIRChemCalculator(predictor, task_name="omol")
+        print(f"Calculator: FAIRChem UMA / {uma_name} on {device}")
+        return calc
 
     if "orb" in model:
         try:
@@ -164,9 +186,9 @@ def get_calculator(model: str = DEFAULT_MODEL, device: str | None = None):
         return calc
 
     raise ValueError(
-        f"Unknown model family: {model}\n"
-        "Supported prefixes: 'orb' (orb-models), 'mace' (mace-torch).\n"
-        "Or edit utils.get_calculator() to add your own."
+        f"Unknown model: {model}\n"
+        "Supported: 'orbmol_v2', 'uma', 'mace_small', or any orb-models name.\n"
+        "Edit utils.get_calculator() to add more."
     )
 
 

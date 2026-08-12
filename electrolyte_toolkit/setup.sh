@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== Electrolyte MD Toolkit Setup ==="
+echo "Setting up the electrolyte MD toolkit"
 echo
 
-# # Python venv #
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment"
     python3 -m venv venv
@@ -14,14 +13,12 @@ source venv/bin/activate
 echo "Using Python: $(python --version) at $(which python)"
 echo
 
-# pip dependencies #
 echo "Installing Python dependencies"
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
 echo "  Done."
 echo
 
-# Packmol check #
 if command -v packmol &> /dev/null; then
     echo "Packmol: $(which packmol)"
 else
@@ -32,7 +29,6 @@ else
 fi
 echo
 
-# GPU check #
 python -c "
 import torch
 if torch.cuda.is_available():
@@ -42,5 +38,5 @@ else:
 "
 echo
 
-echo "=== Setup complete ==="
+echo "Setup complete."
 echo "Activate the environment with:  source venv/bin/activate"
