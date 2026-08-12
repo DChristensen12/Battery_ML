@@ -1,0 +1,8 @@
+HETATM    1  P   MOL A   1       0.000   0.000   0.000  1.00  0.00           P  
+HETATM    2  F   MOL A   1       1.600   0.000   0.000  1.00  0.00           F  
+HETATM    3  F   MOL A   1      -1.600   0.000   0.000  1.00  0.00           F  
+HETATM    4  F   MOL A   1       0.000   1.600   0.000  1.00  0.00           F  
+HETATM    5  F   MOL A   1       0.000  -1.600   0.000  1.00  0.00           F  
+HETATM    6  F   MOL A   1       0.000   0.000   1.600  1.00  0.00           F  
+HETATM    7  F   MOL A   1       0.000   0.000  -1.600  1.00  0.00           F  
+END
