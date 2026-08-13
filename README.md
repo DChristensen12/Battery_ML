@@ -25,7 +25,7 @@ See the [dataset README](data/na-electrolyte-solvation-boxes/README.md) for the 
 
 ## Deep-Shell
 
-Will contain the scripts for lanthanide and actinide chemistry.
+Will contain the scripts for lanthanide and actinide chemistry. I am using perlmutter (a supercomputer) for many of these calculations, however you can still run it via google colab or via any GPU you have access to (CPU works too, but would take much longer to run).
 
 ## Electrolyte Molecular Dynamics Toolkit
 
