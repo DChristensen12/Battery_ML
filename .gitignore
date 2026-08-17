@@ -32,3 +32,11 @@ vmd/
 # OS
 .DS_Store
 Thumbs.db
+
+# Colab tunnel connection details (contains a live auth token)
+.colab_runtime.json
+
+# Perlmutter credentials, job history, and campaign state
+.perlmutter.json
+.perlmutter_jobs.json
+.perlmutter_campaigns.json

@@ -1,6 +1,6 @@
 # SolvationNet
 
-This Repository is being used for machine learning simulations to study the molecular structure and dynamics of sodium ion battery electrolytes. It is part of my ongoing research at the Lawrence Berkeley National Lab under Nitesh Kumar and Samuel Blau.
+This Repository is being used for machine learning simulations to study the molecular structure and dynamics of sodium ion battery electrolytes and research into lanthanide and actinide chemistry. It is part of my ongoing research at the Lawrence Berkeley National Lab under Nitesh Kumar and Samuel Blau.
 
 This contains scripts and notebooks used during the research, the datasets produced by them, and other research outputs such as the poster below that was presented at the UC Berkeley College of Chemistry's 18th Annual Saegebarth Undergraduate Research Fair.
 
