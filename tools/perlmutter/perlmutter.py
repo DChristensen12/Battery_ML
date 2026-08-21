@@ -7,9 +7,9 @@ sessions, auto-retry of failed jobs from checkpoints, and pipeline chaining
 (equilibrate → run_md → analyze) via SLURM dependencies.
 
 Prerequisites:
-    1. NERSC account with a compute allocation
-    2. SSH keys via sshproxy.sh (https://docs.nersc.gov/connect/mfa/)
-    3. Run `perlmutter.py setup` once to configure
+    1.) NERSC account with a compute allocation
+    2.) SSH keys via sshproxy.sh (https://docs.nersc.gov/connect/mfa/)
+    3.) Run `perlmutter.py setup` once to configure
 
 Quickstart:
     # One-time setup
