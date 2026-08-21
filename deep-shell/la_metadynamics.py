@@ -4,9 +4,9 @@
 Runs inside an Axon Modal sandbox (chemistry-py-3.12-gpu, L40S).
 All I/O goes to /mnt/remote so it persists across sandbox restarts.
 
-Usage (from Axon sandbox):
-    TAG="oh" python /mnt/remote/<project>/run_metad.py oh
-    TAG="f"  python /mnt/remote/<project>/run_metad.py f
+Usage (from the Axon sandbox, TAG works as an env var too):
+    python la_metadynamics.py oh
+    python la_metadynamics.py f
 
 Dependencies (install in sandbox before running):
     pip install mace-torch
@@ -27,6 +27,8 @@ from ase.calculators.calculator import Calculator, all_changes
 from mace.calculators import mace_polar
 
 TAG = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TAG", "oh")
+# anion indices point at the O/F atoms in each droplet file, not whole molecules.
+# r0 is the switching midpoint, tighter for F- since it sits closer in than hydroxyl O.
 CONFIGS = {
     "oh": {"input": "La_OH_droplet.xyz", "anions": [1, 3, 5], "r0": 3.5},
     "f":  {"input": "La_F_droplet.xyz",  "anions": [1, 2, 3], "r0": 3.2},
@@ -36,6 +38,7 @@ cfg = CONFIGS[TAG]
 OUT = os.environ.get("METAD_DIR", "/mnt/remote/26-08-20-la-metadynamics")
 INPUT = os.path.join(OUT, cfg["input"])
 
+# H0_EV is a 2 kJ/mol hill in eV. nn/mm are the usual plumed rational exponents.
 LA = 0; TOTAL = 400_000; DT = 1.0; TEMP = 300; FRIC = 0.01
 SIG = 0.15; H0_EV = 2.0 / 96.485; GAMMA = 15; PACE = 500
 NN, MM = 6, 12; LOG_INT = 500; CKPT_INT = 2000; SNAP_INT = 25000
@@ -47,6 +50,7 @@ CKPT_PATH = os.path.join(OUT, f"ckpt_{TAG}.pkl")
 
 
 def cn_and_grad(pos, la, anions, r0, nn, mm):
+    # plumed's rational switching function, s = (1 - x^nn) / (1 - x^mm) with x = r/r0
     n = len(pos); cn = 0.0; grad = np.zeros((n, 3))
     la_pos = pos[la]
     for ai in anions:
@@ -54,6 +58,7 @@ def cn_and_grad(pos, la, anions, r0, nn, mm):
         if r < 1e-10: continue
         x = r / r0; xn = x**nn; xm = x**mm
         num = 1.0 - xn; den = 1.0 - xm
+        # r == r0 is a removable 0/0 (the limit is nn/mm), never actually lands there in float32
         if abs(den) < 1e-30: continue
         cn += num / den
         dnum = -nn * x**(nn-1) / r0; dden = -mm * x**(mm-1) / r0
@@ -87,15 +92,18 @@ class MetadCalc(Calculator):
         self.results['forces'] = f - dbias * cn_grad
         self._cn = cn; self._bias = bias; self._base_e = e
         ke = atoms.get_kinetic_energy()
+        # 3N-3 dof, FixCom takes out the com translation
         self._temp = 2 * ke / ((3 * len(atoms) - 3) * units.kB)
 
     def deposit(self, cn):
+        # well-tempered, so hills shrink wherever the bias has already piled up
         v = sum(w * np.exp(-(cn - c)**2 / (2 * self.sig**2)) for c, w in self.hills) if self.hills else 0.0
         w = self.h0 * np.exp(-v / (self.kbt * (self.gamma - 1)))
         self.hills.append((cn, w)); return w
 
 
 atoms = read(INPUT)
+# mace_polar reads these off atoms.info. net charge is 0, the three anions balance La3+.
 atoms.info["charge"] = 0
 atoms.info["spin"] = 1
 atoms.info["external_field"] = [0.0, 0.0, 0.0]
@@ -126,6 +134,8 @@ if start_step == 0:
 print(f"[{TAG.upper()}] Starting metadynamics: {TOTAL} steps, R0={cfg['r0']}, sigma={SIG}, gamma={GAMMA}", flush=True)
 t0 = time.time(); step = start_step
 
+# one step at a time so hills, logging and checkpoints share a counter, and a resume
+# lands exactly where the pickle left off
 while step < TOTAL:
     dyn.run(1); step += 1
     if step % PACE == 0:
@@ -146,10 +156,11 @@ while step < TOTAL:
     if step % CKPT_INT == 0:
         ckpt_data = {"positions": atoms.positions.copy(), "velocities": atoms.get_velocities().copy(),
                      "hills": list(metad.hills), "step": step}
+        # tmp then rename, a sandbox restart mid-dump otherwise leaves a truncated pickle
         tmp = CKPT_PATH + ".tmp"
         with open(tmp, "wb") as fh: pickle.dump(ckpt_data, fh)
         os.replace(tmp, CKPT_PATH)
 
 write(os.path.join(OUT, f"metad_{TAG}_final.xyz"), atoms)
 hills_fh.close(); colvar_fh.close(); log_fh.close()
-print(f"[{TAG.upper()}] COMPLETED: {step} steps, {len(metad.hills)} hills, {(time.time()-t0)/3600:.1f}h", flush=True)
+print(f"[{TAG.upper()}] done: {step} steps, {len(metad.hills)} hills, {(time.time()-t0)/3600:.1f}h", flush=True)
